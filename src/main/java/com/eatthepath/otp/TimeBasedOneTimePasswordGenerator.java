@@ -265,7 +265,16 @@ public class TimeBasedOneTimePasswordGenerator {
         return this.hotp.getAlgorithm();
     }
 
-    private long getCounterValue(final Instant timestamp) {
+    /**
+     * Returns the time step (counter value) represented by the given timestamp.
+     *
+     * @param timestamp the timestamp for which to calculate a time step
+     *
+     * @return the time step represented by the given timestamp
+     *
+     * @throws NullPointerException if the given timestamp is {@code null}
+     */
+    long getCounterValue(final Instant timestamp) {
         if (timestamp == null) {
             throw new NullPointerException("Timestamp must not be null");
         }

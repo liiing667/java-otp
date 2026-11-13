@@ -76,6 +76,44 @@ if (totp.validateOneTimePassword(key, now, userSuppliedOneTimePassword)) {
 > [!CAUTION]
 > Please note that `validateOneTimePassword` simply checks equality of one-time passwords; compensating for clock drift,  throttling/rate-limiting password validation attempts, clock resynchronization, and so on are all beyond java-otp's scope and callers must address those concerns on their own. For more information, please see ["TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations"](https://datatracker.ietf.org/doc/html/rfc6238#section-5) (and ["HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements"](https://datatracker.ietf.org/doc/html/rfc4226#section-7) for HOTP).
 
+### Consuming one-time passwords
+
+`validateOneTimePassword` only checks whether a password matches; it does not keep track of which passwords have already been used, so the same password can be submitted more than once. For login flows that need genuine one-time semantics, java-otp provides stateful verifiers that atomically consume a counter value (HOTP) or time step (TOTP). A verifier instance tracks a single key (for example, a single user account), and concurrent attempts are synchronized so that exactly one attempt can ever succeed.
+
+For HOTP, a verifier holds the next expected counter value and searches a bounded lookahead window to resynchronize with a client whose counter has drifted ahead. A successful verification advances the counter past the consumed value; a failed verification leaves the counter untouched.
+
+```java
+final HmacOneTimePasswordGenerator hotp = new HmacOneTimePasswordGenerator();
+
+// One verifier per key/account; the client's next expected counter value is 0, and we allow up to
+// two counter values of drift within the lookahead window.
+final HmacOneTimePasswordVerifier verifier =
+        new HmacOneTimePasswordVerifier(hotp, key, 0, 2);
+
+if (verifier.consumeOneTimePassword(userSuppliedOneTimePassword)) {
+    // Success; verifier.getCounter() has advanced past the consumed counter value, and presenting
+    // the same password again will always fail.
+} else {
+    // The password matched no counter value in the lookahead window; the counter has not moved.
+}
+```
+
+For TOTP, a verifier remembers the most recently consumed time step and accepts passwords within a bounded drift window (in both directions) around the current step. Any password for a time step at or before the last consumed step is always rejected, which closes the replay window and compensates for modest clock drift.
+
+```java
+final TimeBasedOneTimePasswordGenerator totp = new TimeBasedOneTimePasswordGenerator();
+
+// Accept passwords from one time step in the past through one time step in the future.
+final TimeBasedOneTimePasswordVerifier verifier =
+        new TimeBasedOneTimePasswordVerifier(totp, key, 1);
+
+if (verifier.consumeOneTimePassword(Instant.now(), userSuppliedOneTimePassword)) {
+    // Success; the matching time step has been consumed and the same password can never be accepted again.
+}
+```
+
+Verifiers keep their state in memory. Applications that need state to survive a restart should persist the HOTP counter (`HmacOneTimePasswordVerifier#getCounter()`) or the last consumed TOTP time step (`TimeBasedOneTimePasswordVerifier#getLastConsumedTimeStep()`) alongside the account and reconstruct the verifier after startup. Throttling and rate-limiting of verification attempts remain the caller's responsibility.
+
 ## Performance and best practices
 
 One-time password generators are thread-safe and reusable. Generally, applications should treat one-time password generator instances as long-lived resources (as opposed to creating new generators for each password-generation call).
