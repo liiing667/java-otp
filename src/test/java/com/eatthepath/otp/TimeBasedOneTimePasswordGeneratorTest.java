@@ -250,6 +250,126 @@ class TimeBasedOneTimePasswordGeneratorTest {
             totp.validateOneTimePassword(key, null, "003784"));
     }
 
+    @Test
+    void verifyOneTimePasswordInt() throws InvalidKeyException {
+        final TimeBasedOneTimePasswordGenerator totp = new TimeBasedOneTimePasswordGenerator();
+        final Instant timestamp = Instant.now();
+        final SecretKey key =
+            new SecretKeySpec(HMAC_SHA1_KEY_BYTES, TimeBasedOneTimePasswordGenerator.TOTP_ALGORITHM_HMAC_SHA1);
+
+        final long expectedTimeStep = timestamp.toEpochMilli() / totp.getTimeStep().toMillis();
+
+        final OneTimePasswordVerificationResult successfulResult =
+                totp.verifyOneTimePassword(key, timestamp, totp.generateOneTimePassword(key, timestamp));
+
+        assertTrue(successfulResult.isSuccessful());
+        assertFalse(successfulResult.getFailureReason().isPresent());
+        assertEquals(expectedTimeStep, successfulResult.getMatchedCounter());
+
+        final OneTimePasswordVerificationResult mismatchResult = totp.verifyOneTimePassword(key, timestamp,
+                totp.generateOneTimePassword(key, timestamp.plus(totp.getTimeStep())));
+
+        assertFalse(mismatchResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.MISMATCH,
+                mismatchResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(expectedTimeStep, mismatchResult.getMatchedCounter());
+
+        assertThrows(NullPointerException.class, () ->
+            totp.verifyOneTimePassword(key, null, totp.generateOneTimePassword(key, timestamp)));
+    }
+
+    @Test
+    void verifyOneTimePasswordString() {
+        final TimeBasedOneTimePasswordGenerator totp = new TimeBasedOneTimePasswordGenerator();
+        final SecretKey key =
+            new SecretKeySpec(HMAC_SHA1_KEY_BYTES, TimeBasedOneTimePasswordGenerator.TOTP_ALGORITHM_HMAC_SHA1);
+
+        // A timestamp of 1970-01-01T00:18:00Z with a default TOTP generator produces a one-time password of "003784"
+        // (or "००३७८४" in the hi-IN-u-nu-Deva locale). The leading zeros are an important edge case for string-based
+        // tests.
+        final Instant timestamp = Instant.parse("1970-01-01T00:18:00Z");
+        final long expectedTimeStep = timestamp.toEpochMilli() / totp.getTimeStep().toMillis();
+
+        final OneTimePasswordVerificationResult successfulResult = totp.verifyOneTimePassword(key, timestamp, "003784");
+
+        assertTrue(successfulResult.isSuccessful());
+        assertFalse(successfulResult.getFailureReason().isPresent());
+        assertEquals(expectedTimeStep, successfulResult.getMatchedCounter());
+
+        assertTrue(totp.verifyOneTimePassword(key, timestamp, "००३७८४").isSuccessful());
+
+        for (final String malformedPassword : new String[] {"3784", "0003784", "0037840", "cursed"}) {
+            final OneTimePasswordVerificationResult malformedResult =
+                    totp.verifyOneTimePassword(key, timestamp, malformedPassword);
+
+            assertFalse(malformedResult.isSuccessful());
+            assertEquals(OneTimePasswordVerificationResult.FailureReason.MALFORMED_ONE_TIME_PASSWORD,
+                    malformedResult.getFailureReason().orElseThrow(IllegalStateException::new));
+            assertEquals(expectedTimeStep, malformedResult.getMatchedCounter());
+        }
+
+        final OneTimePasswordVerificationResult mismatchResult = totp.verifyOneTimePassword(key, timestamp, "123456");
+
+        assertFalse(mismatchResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.MISMATCH,
+                mismatchResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(expectedTimeStep, mismatchResult.getMatchedCounter());
+
+        assertThrows(NullPointerException.class, () ->
+            totp.verifyOneTimePassword(key, timestamp, null));
+
+        assertThrows(NullPointerException.class, () ->
+            totp.verifyOneTimePassword(key, null, "003784"));
+    }
+
+    @Test
+    void verifyOneTimePasswordWithInvalidKey() {
+        final TimeBasedOneTimePasswordGenerator totp = new TimeBasedOneTimePasswordGenerator();
+        final Instant timestamp = Instant.parse("1970-01-01T00:18:00Z");
+        final long expectedTimeStep = timestamp.toEpochMilli() / totp.getTimeStep().toMillis();
+        final SecretKey unusableKey = new SecretKey() {
+            @Override
+            public String getAlgorithm() {
+                return TimeBasedOneTimePasswordGenerator.TOTP_ALGORITHM_HMAC_SHA1;
+            }
+
+            @Override
+            public String getFormat() {
+                return "RAW";
+            }
+
+            @Override
+            public byte[] getEncoded() {
+                return null;
+            }
+        };
+
+        final OneTimePasswordVerificationResult intResult = totp.verifyOneTimePassword(unusableKey, timestamp, 123456);
+
+        assertFalse(intResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.INVALID_KEY,
+                intResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(expectedTimeStep, intResult.getMatchedCounter());
+
+        final OneTimePasswordVerificationResult stringResult = totp.verifyOneTimePassword(unusableKey, timestamp, "123456");
+
+        assertFalse(stringResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.INVALID_KEY,
+                stringResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(expectedTimeStep, stringResult.getMatchedCounter());
+    }
+
+    @Test
+    void rejectInvalidConfigurationBeforeVerification() {
+        assertThrows(IllegalArgumentException.class,
+            () -> new TimeBasedOneTimePasswordGenerator(Duration.ofSeconds(30), 6, "Not a supported algorithm"));
+        assertThrows(IllegalArgumentException.class,
+            () -> new TimeBasedOneTimePasswordGenerator(Duration.ofSeconds(30), 5));
+        assertThrows(IllegalArgumentException.class,
+            () -> new TimeBasedOneTimePasswordGenerator(Duration.ofSeconds(30), 9));
+        assertThrows(IllegalArgumentException.class, () -> new TimeBasedOneTimePasswordGenerator(Duration.ZERO));
+    }
+
     private static void assumeAlgorithmSupported(final String algorithm) {
         boolean algorithmSupported = true;
 

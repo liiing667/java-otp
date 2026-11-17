@@ -275,9 +275,94 @@ public class HmacOneTimePasswordGenerator {
      * @see <a href="https://datatracker.ietf.org/doc/html/rfc4226#section-7">HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements</a>
      */
     public boolean validateOneTimePassword(final SecretKey key, final long counter, final int oneTimePassword) throws InvalidKeyException {
+        return matchesOneTimePassword(key, counter, oneTimePassword);
+    }
+
+    private boolean matchesOneTimePassword(final SecretKey key, final long counter, final int oneTimePassword) throws InvalidKeyException {
         // This looks a little goofy, but the idea is to ward off any CPU-specific optimizations that might make
         // direct integer comparison a not-constant-time operation
         return (generateOneTimePassword(key, counter) ^ oneTimePassword) == 0;
+    }
+
+    /**
+     * Verifies a given one-time password against the one-time password generated for the given key and counter value
+     * and returns a {@link OneTimePasswordVerificationResult} that categorizes the outcome. Note that this method
+     * simply checks equality of two one-time passwords; incrementing expected counter values, throttling/rate-limiting,
+     * counter resynchronization, and so on are all beyond the scope of this method.
+     *
+     * @param key the key to be used to generate the password
+     * @param counter the counter value for which to generate the password
+     * @param oneTimePassword the user-provided one-time password to check against the generated one-time password
+     *
+     * @return a {@link OneTimePasswordVerificationResult} describing whether verification succeeded and, on failure,
+     * whether the given one-time password was malformed, did not match, or the given key was invalid; the returned
+     * result always reports the counter value against which the password was verified
+     *
+     * @throws NullPointerException if the given one-time password is {@code null}
+     *
+     * @see OneTimePasswordVerificationResult.FailureReason
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc4226#section-7">HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements</a>
+     */
+    public OneTimePasswordVerificationResult verifyOneTimePassword(final SecretKey key, final long counter, final String oneTimePassword) {
+        if (oneTimePassword == null) {
+            throw new NullPointerException("One-time password must not be null");
+        }
+
+        // We COULD return early if the length doesn't match, but that could allow an attacker to learn the expected
+        // password length by observing execution time. Arguably, the expected password length isn't a secret, but we
+        // can avoid revealing it here and choose to do so.
+        final boolean lengthMatches = oneTimePassword.length() == this.passwordLength;
+
+        try {
+            final OneTimePasswordVerificationResult result = verifyOneTimePassword(key, counter, Integer.parseInt(oneTimePassword));
+
+            if (result.isSuccessful() & lengthMatches) {
+                return result;
+            }
+
+            // An invalid key is a property of the credential itself and takes precedence over malformed-password
+            // reporting so callers can always detect unusable keys.
+            if (result.getFailureReason().orElse(null) == OneTimePasswordVerificationResult.FailureReason.INVALID_KEY) {
+                return result;
+            }
+
+            return OneTimePasswordVerificationResult.failure(
+                    lengthMatches ? OneTimePasswordVerificationResult.FailureReason.MISMATCH
+                            : OneTimePasswordVerificationResult.FailureReason.MALFORMED_ONE_TIME_PASSWORD,
+                    counter);
+        } catch (final NumberFormatException e) {
+            // This matches the timing characteristics of the boolean validation method, which never generates the
+            // expected password when the supplied string cannot be parsed as an integer.
+            return OneTimePasswordVerificationResult.failure(
+                    OneTimePasswordVerificationResult.FailureReason.MALFORMED_ONE_TIME_PASSWORD, counter);
+        }
+    }
+
+    /**
+     * Verifies a given one-time password against the one-time password generated for the given key and counter value
+     * and returns a {@link OneTimePasswordVerificationResult} that categorizes the outcome. Note that this method
+     * simply checks equality of two one-time passwords; incrementing expected counter values, throttling/rate-limiting,
+     * counter resynchronization, and so on are all beyond the scope of this method.
+     *
+     * @param key the key to be used to generate the password
+     * @param counter the counter value for which to generate the password
+     * @param oneTimePassword the user-provided one-time password to check against the generated one-time password
+     *
+     * @return a {@link OneTimePasswordVerificationResult} describing whether verification succeeded and, on failure,
+     * whether the given one-time password did not match or the given key was invalid; the returned result always
+     * reports the counter value against which the password was verified
+     *
+     * @see OneTimePasswordVerificationResult.FailureReason
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc4226#section-7">HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements</a>
+     */
+    public OneTimePasswordVerificationResult verifyOneTimePassword(final SecretKey key, final long counter, final int oneTimePassword) {
+        try {
+            return matchesOneTimePassword(key, counter, oneTimePassword)
+                    ? OneTimePasswordVerificationResult.success(counter)
+                    : OneTimePasswordVerificationResult.failure(OneTimePasswordVerificationResult.FailureReason.MISMATCH, counter);
+        } catch (final InvalidKeyException e) {
+            return OneTimePasswordVerificationResult.failure(OneTimePasswordVerificationResult.FailureReason.INVALID_KEY, counter);
+        }
     }
 
     /**

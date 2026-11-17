@@ -73,6 +73,36 @@ if (totp.validateOneTimePassword(key, now, userSuppliedOneTimePassword)) {
 }
 ```
 
+For callers that need to distinguish between different kinds of failures — for example to decide whether to allow
+another attempt or to disable a credential — `verifyOneTimePassword` returns a categorized result instead of a plain
+boolean. The result also reports the counter (HOTP) or time step (TOTP) against which the password was checked:
+
+```java
+final OneTimePasswordVerificationResult result =
+        totp.verifyOneTimePassword(key, now, userSuppliedOneTimePassword);
+
+if (result.isSuccessful()) {
+    System.out.println("Password matched time step " + result.getMatchedCounter());
+} else {
+    switch (result.getFailureReason().orElseThrow(IllegalStateException::new)) {
+        case MISMATCH:
+            // The password was well-formed but wrong; the user may try again.
+            break;
+        case MALFORMED_ONE_TIME_PASSWORD:
+            // The password had the wrong length or could not be parsed as an integer.
+            break;
+        case INVALID_KEY:
+            // The key itself cannot be used; disable or repair the credential.
+            break;
+    }
+}
+```
+
+Password comparison is performed in constant time relative to the expected password, and unsupported algorithms or
+password lengths outside the allowed range are rejected when a generator is constructed, before any verification takes
+place. The boolean `validateOneTimePassword` methods remain available as a convenience and continue to throw
+`InvalidKeyException` when a key cannot be used.
+
 > [!CAUTION]
 > Please note that `validateOneTimePassword` simply checks equality of one-time passwords; compensating for clock drift,  throttling/rate-limiting password validation attempts, clock resynchronization, and so on are all beyond java-otp's scope and callers must address those concerns on their own. For more information, please see ["TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations"](https://datatracker.ietf.org/doc/html/rfc6238#section-5) (and ["HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements"](https://datatracker.ietf.org/doc/html/rfc4226#section-7) for HOTP).
 

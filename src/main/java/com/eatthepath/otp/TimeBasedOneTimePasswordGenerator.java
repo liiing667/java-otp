@@ -239,6 +239,54 @@ public class TimeBasedOneTimePasswordGenerator {
     }
 
     /**
+     * Verifies a given one-time password against the one-time password generated for the given key and timestamp and
+     * returns a {@link OneTimePasswordVerificationResult} that categorizes the outcome. Note that this method simply
+     * checks equality of two one-time passwords; compensating for clock drift, throttling/rate-limiting, clock
+     * resynchronization, and so on are all beyond the scope of this method.
+     *
+     * @param key the key to be used to generate the password
+     * @param timestamp the timestamp for which to generate the password
+     * @param oneTimePassword the user-provided one-time password to check against the generated one-time password
+     *
+     * @return a {@link OneTimePasswordVerificationResult} describing whether verification succeeded and, on failure,
+     * whether the given one-time password was malformed, did not match, or the given key was invalid; the returned
+     * result always reports the time step (see {@link OneTimePasswordVerificationResult#getMatchedCounter()}) derived
+     * from the given timestamp
+     *
+     * @throws NullPointerException if the given timestamp or one-time password is {@code null}
+     *
+     * @see OneTimePasswordVerificationResult.FailureReason
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc6238#section-5">TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations</a>
+     */
+    public OneTimePasswordVerificationResult verifyOneTimePassword(final SecretKey key, final Instant timestamp, final String oneTimePassword) {
+        return this.hotp.verifyOneTimePassword(key, getCounterValue(timestamp), oneTimePassword);
+    }
+
+    /**
+     * Verifies a given one-time password against the one-time password generated for the given key and timestamp and
+     * returns a {@link OneTimePasswordVerificationResult} that categorizes the outcome. Note that this method simply
+     * checks equality of two one-time passwords; compensating for clock drift, throttling/rate-limiting, clock
+     * resynchronization, and so on are all beyond the scope of this method.
+     *
+     * @param key the key to be used to generate the password
+     * @param timestamp the timestamp for which to generate the password
+     * @param oneTimePassword the user-provided one-time password to check against the generated one-time password
+     *
+     * @return a {@link OneTimePasswordVerificationResult} describing whether verification succeeded and, on failure,
+     * whether the given one-time password did not match or the given key was invalid; the returned result always
+     * reports the time step (see {@link OneTimePasswordVerificationResult#getMatchedCounter()}) derived from the given
+     * timestamp
+     *
+     * @throws NullPointerException if the given timestamp is {@code null}
+     *
+     * @see OneTimePasswordVerificationResult.FailureReason
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc6238#section-5">TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations</a>
+     */
+    public OneTimePasswordVerificationResult verifyOneTimePassword(final SecretKey key, final Instant timestamp, final int oneTimePassword) {
+        return this.hotp.verifyOneTimePassword(key, getCounterValue(timestamp), oneTimePassword);
+    }
+
+    /**
      * Returns the time step used by this generator.
      *
      * @return the time step used by this generator

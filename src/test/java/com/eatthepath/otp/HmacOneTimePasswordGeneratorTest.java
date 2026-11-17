@@ -180,6 +180,125 @@ class HmacOneTimePasswordGeneratorTest {
     }
 
     @Test
+    void verifyOneTimePasswordInt() throws InvalidKeyException {
+        final HmacOneTimePasswordGenerator hotp = new HmacOneTimePasswordGenerator();
+        final long counter = 7;
+
+        final OneTimePasswordVerificationResult successfulResult =
+                hotp.verifyOneTimePassword(HOTP_KEY, counter, hotp.generateOneTimePassword(HOTP_KEY, counter));
+
+        assertTrue(successfulResult.isSuccessful());
+        assertFalse(successfulResult.getFailureReason().isPresent());
+        assertEquals(counter, successfulResult.getMatchedCounter());
+
+        final OneTimePasswordVerificationResult mismatchResult =
+                hotp.verifyOneTimePassword(HOTP_KEY, counter, hotp.generateOneTimePassword(HOTP_KEY, counter + 1));
+
+        assertFalse(mismatchResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.MISMATCH,
+                mismatchResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(counter, mismatchResult.getMatchedCounter());
+    }
+
+    @Test
+    void verifyOneTimePasswordString() {
+        final HmacOneTimePasswordGenerator hotp = new HmacOneTimePasswordGenerator();
+
+        // A counter value of 36 with HOTP produces a one-time password of "003784" (or "००३७८४" in the hi-IN-u-nu-Deva
+        // locale). The leading zeros are an important edge case for string-based tests.
+        final long counter = 36;
+
+        final OneTimePasswordVerificationResult successfulResult = hotp.verifyOneTimePassword(HOTP_KEY, counter, "003784");
+
+        assertTrue(successfulResult.isSuccessful());
+        assertFalse(successfulResult.getFailureReason().isPresent());
+        assertEquals(counter, successfulResult.getMatchedCounter());
+
+        assertTrue(hotp.verifyOneTimePassword(HOTP_KEY, counter, "००३७८४").isSuccessful());
+
+        for (final String malformedPassword : new String[] {"3784", "0003784", "0037840", "cursed"}) {
+            final OneTimePasswordVerificationResult malformedResult =
+                    hotp.verifyOneTimePassword(HOTP_KEY, counter, malformedPassword);
+
+            assertFalse(malformedResult.isSuccessful());
+            assertEquals(OneTimePasswordVerificationResult.FailureReason.MALFORMED_ONE_TIME_PASSWORD,
+                    malformedResult.getFailureReason().orElseThrow(IllegalStateException::new));
+            assertEquals(counter, malformedResult.getMatchedCounter());
+        }
+
+        final OneTimePasswordVerificationResult mismatchResult = hotp.verifyOneTimePassword(HOTP_KEY, counter, "123456");
+
+        assertFalse(mismatchResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.MISMATCH,
+                mismatchResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(counter, mismatchResult.getMatchedCounter());
+
+        assertThrows(NullPointerException.class, () ->
+            hotp.verifyOneTimePassword(HOTP_KEY, counter, null));
+    }
+
+    @Test
+    void verifyOneTimePasswordWithInvalidKey() throws InvalidKeyException {
+        final HmacOneTimePasswordGenerator hotp = new HmacOneTimePasswordGenerator();
+        final long counter = 36;
+        final SecretKey unusableKey = new SecretKey() {
+            @Override
+            public String getAlgorithm() {
+                return HmacOneTimePasswordGenerator.HOTP_HMAC_ALGORITHM;
+            }
+
+            @Override
+            public String getFormat() {
+                return "RAW";
+            }
+
+            @Override
+            public byte[] getEncoded() {
+                return null;
+            }
+        };
+
+        final OneTimePasswordVerificationResult intResult = hotp.verifyOneTimePassword(unusableKey, counter, 123456);
+
+        assertFalse(intResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.INVALID_KEY,
+                intResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(counter, intResult.getMatchedCounter());
+
+        final OneTimePasswordVerificationResult stringResult = hotp.verifyOneTimePassword(unusableKey, counter, "123456");
+
+        assertFalse(stringResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.INVALID_KEY,
+                stringResult.getFailureReason().orElseThrow(IllegalStateException::new));
+        assertEquals(counter, stringResult.getMatchedCounter());
+
+        // A password that cannot be parsed is reported as malformed even when the key is unusable; no MAC operation
+        // takes place for an unparseable password.
+        final OneTimePasswordVerificationResult malformedResult = hotp.verifyOneTimePassword(unusableKey, counter, "cursed");
+
+        assertFalse(malformedResult.isSuccessful());
+        assertEquals(OneTimePasswordVerificationResult.FailureReason.MALFORMED_ONE_TIME_PASSWORD,
+                malformedResult.getFailureReason().orElseThrow(IllegalStateException::new));
+
+        // The legacy boolean entry points still surface invalid keys as InvalidKeyException.
+        assertThrows(InvalidKeyException.class, () -> hotp.validateOneTimePassword(unusableKey, counter, 123456));
+        assertThrows(InvalidKeyException.class, () -> hotp.validateOneTimePassword(unusableKey, counter, "123456"));
+    }
+
+    @Test
+    void rejectInvalidConfigurationBeforeVerification() {
+        final SecretKey key = HOTP_KEY;
+
+        assertThrows(IllegalArgumentException.class, () -> new HmacOneTimePasswordGenerator(5));
+        assertThrows(IllegalArgumentException.class, () -> new HmacOneTimePasswordGenerator(9));
+        assertThrows(NoSuchAlgorithmException.class, () ->
+                new HmacOneTimePasswordGenerator(6, "Definitely not a real algorithm"));
+
+        // Generators constructed with valid configuration must remain usable.
+        assertDoesNotThrow(() -> new HmacOneTimePasswordGenerator().verifyOneTimePassword(key, 0, "000000"));
+    }
+
+    @Test
     void generateOneTimePasswordConcurrent() throws InterruptedException {
         final int iterations = 10_000;
         final int threadCount = Runtime.getRuntime().availableProcessors() * 4;
