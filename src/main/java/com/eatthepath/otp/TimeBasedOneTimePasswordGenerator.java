@@ -26,8 +26,9 @@ import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
-import java.util.stream.Stream;
 
 /**
  * <p>Generates time-based one-time passwords (TOTP) as specified in
@@ -66,6 +67,12 @@ public class TimeBasedOneTimePasswordGenerator {
      */
     @SuppressWarnings("unused")
     public static final String TOTP_ALGORITHM_HMAC_SHA512 = "HmacSHA512";
+
+    /**
+     * The HMAC algorithms allowed by <a href="https://tools.ietf.org/html/rfc6238">RFC&nbsp;6238</a>.
+     */
+    private static final List<String> SUPPORTED_ALGORITHMS =
+            Arrays.asList(TOTP_ALGORITHM_HMAC_SHA1, TOTP_ALGORITHM_HMAC_SHA256, TOTP_ALGORITHM_HMAC_SHA512);
 
     /**
      * Constructs a new time-based one-time password generator with a default time-step (30 seconds), password length
@@ -129,12 +136,12 @@ public class TimeBasedOneTimePasswordGenerator {
     public TimeBasedOneTimePasswordGenerator(final Duration timeStep, final int passwordLength, final String algorithm)
             throws NoSuchAlgorithmException {
 
-        if (Stream.of(TOTP_ALGORITHM_HMAC_SHA1, TOTP_ALGORITHM_HMAC_SHA256, TOTP_ALGORITHM_HMAC_SHA512)
-            .noneMatch(supportedAlgorithm -> supportedAlgorithm.equals(algorithm))) {
-
+        if (SUPPORTED_ALGORITHMS.stream().noneMatch(supportedAlgorithm -> supportedAlgorithm.equals(algorithm))) {
             throw new IllegalArgumentException("TOTP requires an algorithm of \"HmacSHA1\", \"HmacSHA256\", or \"HmacSHA512\"");
         }
 
+        // The HOTP constructor verifies that an installed provider actually supplies the allowed algorithm at
+        // construction time, so an unavailable provider fails deterministically here rather than at generation time.
         this.hotp = new HmacOneTimePasswordGenerator(passwordLength, algorithm);
         this.timeStep = validateTimeStep(timeStep);
     }
@@ -156,7 +163,7 @@ public class TimeBasedOneTimePasswordGenerator {
      * @return an integer representation of a one-time password; callers will need to format the password for display
      * on their own
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@link HmacOneTimePasswordGenerator#MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      */
     public int generateOneTimePassword(final SecretKey key, final Instant timestamp) throws InvalidKeyException {
         return this.hotp.generateOneTimePassword(key, getCounterValue(timestamp));
@@ -171,7 +178,7 @@ public class TimeBasedOneTimePasswordGenerator {
      *
      * @return a string representation of a one-time password
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@link HmacOneTimePasswordGenerator#MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      *
      * @see Locale#getDefault()
      */
@@ -188,7 +195,7 @@ public class TimeBasedOneTimePasswordGenerator {
      *
      * @return a string representation of a one-time password
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@link HmacOneTimePasswordGenerator#MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      */
     public String generateOneTimePasswordString(final SecretKey key, final Instant timestamp, final Locale locale) throws InvalidKeyException {
         return this.hotp.formatOneTimePassword(this.generateOneTimePassword(key, timestamp), locale);
@@ -208,7 +215,7 @@ public class TimeBasedOneTimePasswordGenerator {
      * {@link #getPasswordLength()}), can be parsed as an integer, and that integer matches the one-time password
       * generated for the given key and timestamp
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@link HmacOneTimePasswordGenerator#MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      * @throws NullPointerException if the given timestamp or one-time password is {@code null}
      *
      * @see <a href="https://datatracker.ietf.org/doc/html/rfc6238#section-5">TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations</a>
@@ -229,7 +236,7 @@ public class TimeBasedOneTimePasswordGenerator {
      * @return {@code true} if and only if the given one-time password matches the one-time password generated for the
      * given key and timestamp
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@link HmacOneTimePasswordGenerator#MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      * @throws NullPointerException if the given timestamp is {@code null}
      *
      * @see <a href="https://datatracker.ietf.org/doc/html/rfc6238#section-5">TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations</a>

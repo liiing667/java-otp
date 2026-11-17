@@ -58,6 +58,48 @@ class HmacOneTimePasswordGeneratorTest {
             520489
     };
 
+    private static final SecretKey HMAC_SHA256_KEY =
+            new SecretKeySpec("12345678901234567890123456789012".getBytes(StandardCharsets.US_ASCII),
+                    "HmacSHA256");
+
+    private static SecretKey rawKey(final String algorithm, final byte[] keyBytes) {
+        return new SecretKey() {
+            @Override
+            public String getAlgorithm() {
+                return algorithm;
+            }
+
+            @Override
+            public String getFormat() {
+                return "RAW";
+            }
+
+            @Override
+            public byte[] getEncoded() {
+                return keyBytes;
+            }
+        };
+    }
+
+    private static SecretKey unencodableKey(final String algorithm) {
+        return new SecretKey() {
+            @Override
+            public String getAlgorithm() {
+                return algorithm;
+            }
+
+            @Override
+            public String getFormat() {
+                return null;
+            }
+
+            @Override
+            public byte[] getEncoded() {
+                return null;
+            }
+        };
+    }
+
     @Test
     void hmacOneTimePasswordGeneratorWithShortPasswordLength() {
         assertThrows(IllegalArgumentException.class, () -> new HmacOneTimePasswordGenerator(5));
@@ -72,6 +114,12 @@ class HmacOneTimePasswordGeneratorTest {
     void hmacOneTimePasswordGeneratorWithBogusAlgorithm() {
         assertThrows(NoSuchAlgorithmException.class, () ->
             new HmacOneTimePasswordGenerator(6, "Definitely not a real algorithm"));
+    }
+
+    @Test
+    void hmacOneTimePasswordGeneratorWithNullAlgorithm() {
+        assertThrows(IllegalArgumentException.class, () ->
+            new HmacOneTimePasswordGenerator(6, null));
     }
 
     @Test
@@ -99,6 +147,75 @@ class HmacOneTimePasswordGeneratorTest {
     private static Stream<Arguments> generateOneTimePassword() {
         return IntStream.range(0, TEST_VECTORS.length)
             .mapToObj(counter -> Arguments.of(counter, TEST_VECTORS[counter]));
+    }
+
+    /**
+     * Key boundary matrix: every entry that does not satisfy the shared-secret policy must fail with a stable
+     * {@link InvalidKeyException} before any password material is generated, regardless of which constructor path
+     * built the generator.
+     */
+    @ParameterizedTest
+    @MethodSource
+    void generateOneTimePasswordRejectsInvalidKeys(final HmacOneTimePasswordGenerator generator, final SecretKey key) {
+        assertThrows(InvalidKeyException.class, () -> generator.generateOneTimePassword(key, 0));
+        assertThrows(InvalidKeyException.class, () -> generator.generateOneTimePasswordString(key, 0));
+        assertThrows(InvalidKeyException.class, () -> generator.validateOneTimePassword(key, 0, 0));
+    }
+
+    private static Stream<Arguments> generateOneTimePasswordRejectsInvalidKeys() throws NoSuchAlgorithmException {
+        final HmacOneTimePasswordGenerator sha1Generator = new HmacOneTimePasswordGenerator();
+        final HmacOneTimePasswordGenerator sha256Generator = new HmacOneTimePasswordGenerator(6, "HmacSHA256");
+        final HmacOneTimePasswordGenerator sha512Generator = new HmacOneTimePasswordGenerator(6, "HmacSHA512");
+
+        final Stream.Builder<Arguments> arguments = Stream.builder();
+
+        // Null and empty keys must never be accepted as credentials.
+        arguments.add(Arguments.of(sha1Generator, null));
+        arguments.add(Arguments.of(sha1Generator, rawKey(HmacOneTimePasswordGenerator.HOTP_HMAC_ALGORITHM, new byte[0])));
+
+        // Keys shorter than the 128-bit (16-byte) RFC 4226 minimum, including one-byte keys that the underlying JCA
+        // provider would happily accept.
+        for (int keyLength = 1; keyLength < HmacOneTimePasswordGenerator.MIN_KEY_LENGTH; keyLength++) {
+            arguments.add(Arguments.of(sha1Generator,
+                    rawKey(HmacOneTimePasswordGenerator.HOTP_HMAC_ALGORITHM, new byte[keyLength])));
+        }
+
+        // Keys that cannot expose their encoded material cannot be inspected and must be rejected.
+        arguments.add(Arguments.of(sha1Generator,
+                unencodableKey(HmacOneTimePasswordGenerator.HOTP_HMAC_ALGORITHM)));
+
+        // Algorithm/use mismatch: a key intended for another HMAC algorithm is not a valid credential, even though
+        // the JCA provider accepts it as a generic secret key.
+        arguments.add(Arguments.of(sha1Generator, HMAC_SHA256_KEY));
+        arguments.add(Arguments.of(sha256Generator, HOTP_KEY));
+        arguments.add(Arguments.of(sha512Generator, HMAC_SHA256_KEY));
+        arguments.add(Arguments.of(sha1Generator,
+                rawKey("HMACSHA1", new byte[HmacOneTimePasswordGenerator.MIN_KEY_LENGTH])));
+        arguments.add(Arguments.of(sha1Generator,
+                rawKey(null, new byte[HmacOneTimePasswordGenerator.MIN_KEY_LENGTH])));
+        arguments.add(Arguments.of(sha1Generator,
+                rawKey("AES", new byte[HmacOneTimePasswordGenerator.MIN_KEY_LENGTH])));
+
+        return arguments.build();
+    }
+
+    @ParameterizedTest
+    @MethodSource
+    void generateOneTimePasswordAcceptsBoundaryLengthKey(final String algorithm, final int keyLength) throws Exception {
+        final HmacOneTimePasswordGenerator generator = new HmacOneTimePasswordGenerator(6, algorithm);
+        final SecretKey key = new SecretKeySpec(new byte[keyLength], algorithm);
+
+        // A key at exactly the policy boundary is valid and must produce a stable, repeatable password.
+        assertEquals(generator.generateOneTimePassword(key, 0), generator.generateOneTimePassword(key, 0));
+        assertTrue(generator.validateOneTimePassword(key, 0, generator.generateOneTimePassword(key, 0)));
+    }
+
+    private static Stream<Arguments> generateOneTimePasswordAcceptsBoundaryLengthKey() {
+        return Stream.of(
+                Arguments.of("HmacSHA1", HmacOneTimePasswordGenerator.MIN_KEY_LENGTH),
+                Arguments.of("HmacSHA256", HmacOneTimePasswordGenerator.MIN_KEY_LENGTH),
+                Arguments.of("HmacSHA512", HmacOneTimePasswordGenerator.MIN_KEY_LENGTH)
+        );
     }
 
     @Test

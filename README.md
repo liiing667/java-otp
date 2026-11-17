@@ -76,6 +76,16 @@ if (totp.validateOneTimePassword(key, now, userSuppliedOneTimePassword)) {
 > [!CAUTION]
 > Please note that `validateOneTimePassword` simply checks equality of one-time passwords; compensating for clock drift,  throttling/rate-limiting password validation attempts, clock resynchronization, and so on are all beyond java-otp's scope and callers must address those concerns on their own. For more information, please see ["TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations"](https://datatracker.ietf.org/doc/html/rfc6238#section-5) (and ["HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements"](https://datatracker.ietf.org/doc/html/rfc4226#section-7) for HOTP).
 
+## Key and algorithm requirements
+
+java-otp enforces a consistent key policy so that weak or mismatched keys are reported as `InvalidKeyException` before any password material is generated rather than being silently accepted by the underlying JCA provider:
+
+- Keys must be intended for the generator's HMAC algorithm; the key's algorithm name (see `SecretKey#getAlgorithm()`) must match the generator's algorithm exactly.
+- Keys must expose encoded key material (see `SecretKey#getEncoded()`); keys that cannot be encoded cannot be inspected and are rejected.
+- Encoded keys must be at least `HmacOneTimePasswordGenerator.MIN_KEY_LENGTH` bytes (128 bits) long, as required by [RFC 4226 section 4 (requirement R6)](https://datatracker.ietf.org/doc/html/rfc4226#section-4); empty and truncated keys are rejected.
+
+Algorithm availability is likewise verified at construction time. A named algorithm with no installed provider fails with `NoSuchAlgorithmException` (or `IllegalArgumentException` for a disallowed TOTP algorithm) when the generator is built, not later during password generation.
+
 ## Performance and best practices
 
 One-time password generators are thread-safe and reusable. Generally, applications should treat one-time password generator instances as long-lived resources (as opposed to creating new generators for each password-generation call).

@@ -55,10 +55,79 @@ class TimeBasedOneTimePasswordGeneratorTest {
     private static final byte[] HMAC_SHA512_KEY_BYTES =
             "1234567890123456789012345678901234567890123456789012345678901234".getBytes(StandardCharsets.US_ASCII);
 
+    private static SecretKey rawKey(final String algorithm, final byte[] keyBytes) {
+        return new SecretKey() {
+            @Override
+            public String getAlgorithm() {
+                return algorithm;
+            }
+
+            @Override
+            public String getFormat() {
+                return "RAW";
+            }
+
+            @Override
+            public byte[] getEncoded() {
+                return keyBytes;
+            }
+        };
+    }
+
     @Test
     void timeBasedOneTimePasswordGeneratorWithUnsupportedAlgorithm() {
         assertThrows(IllegalArgumentException.class,
             () -> new TimeBasedOneTimePasswordGenerator(Duration.ofSeconds(30), 6, "Not a supported algorithm"));
+    }
+
+    @Test
+    void timeBasedOneTimePasswordGeneratorRejectsUnavailableProviderUpFront() {
+        // An allowed algorithm name whose provider has been removed must fail at construction time rather than at
+        // generation time. HmacSHA512 is the only TOTP algorithm that JVMs are not required to provide.
+        final java.security.Provider[] providers = java.security.Security.getProviders();
+        final java.util.List<java.security.Provider> sha512Providers = new java.util.ArrayList<>();
+
+        for (final java.security.Provider provider : providers) {
+            if (provider.getService("Mac", HMAC_SHA512_ALGORITHM) != null) {
+                sha512Providers.add(provider);
+                java.security.Security.removeProvider(provider.getName());
+            }
+        }
+
+        org.junit.jupiter.api.Assumptions.assumeFalse(sha512Providers.isEmpty(),
+                "No provider supplies " + HMAC_SHA512_ALGORITHM + " in this JVM");
+
+        try {
+            assertThrows(NoSuchAlgorithmException.class,
+                () -> new TimeBasedOneTimePasswordGenerator(Duration.ofSeconds(30), 6, HMAC_SHA512_ALGORITHM));
+        } finally {
+            for (final java.security.Provider provider : sha512Providers) {
+                java.security.Security.addProvider(provider);
+            }
+        }
+    }
+
+    @Test
+    void generateOneTimePasswordRejectsInvalidKeys() {
+        final TimeBasedOneTimePasswordGenerator totp = new TimeBasedOneTimePasswordGenerator();
+        final Instant timestamp = Instant.ofEpochSecond(59);
+
+        assertThrows(InvalidKeyException.class, () -> totp.generateOneTimePassword(null, timestamp));
+        assertThrows(InvalidKeyException.class, () ->
+            totp.generateOneTimePassword(rawKey(HMAC_SHA1_ALGORITHM, new byte[0]), timestamp));
+        assertThrows(InvalidKeyException.class, () ->
+            totp.generateOneTimePassword(rawKey(HMAC_SHA1_ALGORITHM, new byte[15]), timestamp));
+        assertThrows(InvalidKeyException.class, () ->
+            totp.generateOneTimePassword(new SecretKeySpec(HMAC_SHA256_KEY_BYTES, HMAC_SHA256_ALGORITHM), timestamp));
+    }
+
+    @Test
+    void generateOneTimePasswordAcceptsMinimumLengthKey() throws InvalidKeyException {
+        final TimeBasedOneTimePasswordGenerator totp = new TimeBasedOneTimePasswordGenerator();
+        final Instant timestamp = Instant.ofEpochSecond(59);
+        final SecretKey key = new SecretKeySpec(new byte[HmacOneTimePasswordGenerator.MIN_KEY_LENGTH], HMAC_SHA1_ALGORITHM);
+
+        assertTrue(totp.validateOneTimePassword(key, timestamp, totp.generateOneTimePassword(key, timestamp)));
     }
 
     @Test

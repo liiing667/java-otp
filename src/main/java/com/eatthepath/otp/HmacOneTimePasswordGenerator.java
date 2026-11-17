@@ -52,8 +52,25 @@ public class HmacOneTimePasswordGenerator {
     static final String HOTP_HMAC_ALGORITHM = "HmacSHA1";
 
     /**
+     * The minimum permitted length, in bytes, of the encoded form of a shared secret. RFC&nbsp;4226 section&nbsp;4
+     * (requirement R6) mandates that HOTP shared secrets be at least 128&nbsp;bits long. Shorter secrets (including the
+     * empty secret) are rejected before any HMAC is computed.
+     */
+    public static final int MIN_KEY_LENGTH = 16;
+
+    /**
+     * The minimum permitted MAC length, in bytes, for a supported HMAC algorithm. HOTP truncation reads four bytes
+     * starting at a dynamic offset within the MAC, so a MAC shorter than eight bytes cannot be truncated safely.
+     */
+    private static final int MIN_MAC_LENGTH = 8;
+
+    /**
      * Creates a new HMAC-based one-time password (HOTP) generator using a default password length
      * ({@value com.eatthepath.otp.HmacOneTimePasswordGenerator#DEFAULT_PASSWORD_LENGTH} digits).
+     *
+     * @throws IllegalStateException if the underlying JRE does not support the
+     * {@value com.eatthepath.otp.HmacOneTimePasswordGenerator#HOTP_HMAC_ALGORITHM} MAC algorithm, even though every
+     * implementation of the Java platform is required to support it
      */
     public HmacOneTimePasswordGenerator() {
         this(DEFAULT_PASSWORD_LENGTH);
@@ -64,14 +81,34 @@ public class HmacOneTimePasswordGenerator {
      *
      * @param passwordLength the length, in decimal digits, of the one-time passwords to be generated; must be between
      * 6 and 8, inclusive
+     *
+     * @throws IllegalStateException if the underlying JRE does not support the
+     * {@value com.eatthepath.otp.HmacOneTimePasswordGenerator#HOTP_HMAC_ALGORITHM} MAC algorithm, even though every
+     * implementation of the Java platform is required to support it
      */
     public HmacOneTimePasswordGenerator(final int passwordLength) {
-        // Every implementation of the Java platform is required to support the HmacSHA1 Mac algorithm, so we don't need
-        // to check for a `NoSuchAlgorithm` exception
-        this.algorithm = HOTP_HMAC_ALGORITHM;
+        // Every implementation of the Java platform is required to support the HmacSHA1 Mac algorithm; a platform that
+        // cannot provide it is broken, so the declared exception cannot reasonably be handled by callers and is
+        // translated into an illegal-state error at construction time instead of surfacing at generation time.
+        this(passwordLength, getRequiredDefaultMac());
+    }
+
+    private HmacOneTimePasswordGenerator(final int passwordLength, final Mac mac) {
+        this.algorithm = mac.getAlgorithm();
         this.modDivisor = getModDivisor(passwordLength);
         this.formatString = getFormatString(passwordLength);
         this.passwordLength = passwordLength;
+    }
+
+    private static Mac getRequiredDefaultMac() {
+        try {
+            return getRequiredMac(HOTP_HMAC_ALGORITHM);
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException(
+                    "Every implementation of the Java platform is required to support the " + HOTP_HMAC_ALGORITHM
+                            + " MAC algorithm, but no supporting provider was found",
+                    e);
+        }
     }
 
     /**
@@ -86,20 +123,28 @@ public class HmacOneTimePasswordGenerator {
      * standards like TOTP may allow for other algorithms
      *
      * @throws NoSuchAlgorithmException if the given algorithm is not supported by the underlying JRE
+     * @throws IllegalArgumentException if the given algorithm is {@code null} or produces a MAC shorter than eight
+     * bytes, which cannot be truncated safely
      */
     HmacOneTimePasswordGenerator(final int passwordLength, final String algorithm) throws NoSuchAlgorithmException {
-        // Fail fast if the requested algorithm isn't supported
-        final Mac mac = Mac.getInstance(algorithm);
+        this(passwordLength, getRequiredMac(algorithm));
+    }
 
-        if (mac.getMacLength() < 8) {
-            throw new IllegalArgumentException("Algorithm (" + algorithm + ") has a MAC length less than 8 bytes");
+    private static Mac getRequiredMac(final String algorithm) throws NoSuchAlgorithmException {
+        if (algorithm == null) {
+            throw new IllegalArgumentException("HMAC algorithm name must not be null");
         }
 
-        this.algorithm = algorithm;
+        // Fail fast at construction time if the requested algorithm isn't provided by any installed provider, so that
+        // an unavailable provider is reported deterministically instead of failing later during password generation.
+        final Mac mac = Mac.getInstance(algorithm);
 
-        this.modDivisor = getModDivisor(passwordLength);
-        this.formatString = getFormatString(passwordLength);
-        this.passwordLength = passwordLength;
+        if (mac.getMacLength() < MIN_MAC_LENGTH) {
+            throw new IllegalArgumentException(
+                    "Algorithm (" + algorithm + ") has a MAC length less than " + MIN_MAC_LENGTH + " bytes");
+        }
+
+        return mac;
     }
 
     private static int getModDivisor(final int passwordLength) {
@@ -151,9 +196,12 @@ public class HmacOneTimePasswordGenerator {
      * @return an integer representation of a one-time password; callers will need to format the password for display
      * on their own
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than
+     * {@value #MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      */
     public int generateOneTimePassword(final SecretKey key, final long counter) throws InvalidKeyException {
+        validateKey(key);
+
         final Mac mac = getMac();
         final ByteBuffer buffer = ByteBuffer.allocate(mac.getMacLength());
 
@@ -174,6 +222,39 @@ public class HmacOneTimePasswordGenerator {
         return (buffer.getInt(offset) & 0x7fff_ffff) % this.modDivisor;
     }
 
+    /**
+     * Validates that the given key is usable with this generator's HMAC algorithm before any password material is
+     * computed. The check is deliberately stricter than the underlying JCA providers: keys must carry an algorithm
+     * name matching this generator's algorithm, must expose encoded key material, and that material must meet the
+     * 128-bit minimum shared-secret length required by RFC&nbsp;4226. This keeps empty, truncated, and
+     * algorithm-mismatched keys from ever being treated as valid credentials.
+     *
+     * @throws InvalidKeyException if the key is {@code null}, cannot be encoded, is too short, or is intended for a
+     * different algorithm
+     */
+    private void validateKey(final SecretKey key) throws InvalidKeyException {
+        if (key == null) {
+            throw new InvalidKeyException("Key must not be null");
+        }
+
+        if (!this.algorithm.equals(key.getAlgorithm())) {
+            throw new InvalidKeyException("Key algorithm (" + key.getAlgorithm()
+                    + ") does not match the generator's HMAC algorithm (" + this.algorithm + ")");
+        }
+
+        final byte[] encodedKey = key.getEncoded();
+
+        if (encodedKey == null) {
+            throw new InvalidKeyException("Key does not expose encoded key material (key format: " + key.getFormat()
+                    + "); shared secrets must be inspectable to verify their length and algorithm");
+        }
+
+        if (encodedKey.length < MIN_KEY_LENGTH) {
+            throw new InvalidKeyException("Key is " + encodedKey.length + " bytes long; shared secrets must be at least "
+                    + MIN_KEY_LENGTH + " bytes (" + (MIN_KEY_LENGTH * 8) + " bits) long");
+        }
+    }
+
     private Mac getMac() {
         try {
             return Mac.getInstance(algorithm);
@@ -192,7 +273,7 @@ public class HmacOneTimePasswordGenerator {
      *
      * @return a string representation of a one-time password
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@value #MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      *
      * @see Locale#getDefault()
      */
@@ -210,7 +291,7 @@ public class HmacOneTimePasswordGenerator {
      *
      * @return a string representation of a one-time password
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@value #MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      */
     public String generateOneTimePasswordString(final SecretKey key, final long counter, final Locale locale) throws InvalidKeyException {
         return this.formatOneTimePassword(generateOneTimePassword(key, counter), locale);
@@ -230,7 +311,7 @@ public class HmacOneTimePasswordGenerator {
      * {@link #getPasswordLength()}), can be parsed as an integer, and that integer matches the one-time password
      * generated for the given key and counter value
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@value #MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      * @throws NullPointerException if the given one-time password is {@code null}
      *
      * @see <a href="https://datatracker.ietf.org/doc/html/rfc4226#section-7">HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements</a>
@@ -270,7 +351,7 @@ public class HmacOneTimePasswordGenerator {
      * @return {@code true} if and only if the given one-time password matches the one-time password generated for the
      * given key and counter value
      *
-     * @throws InvalidKeyException if the given key is inappropriate for initializing the {@link Mac} for this generator
+     * @throws InvalidKeyException if the given key is {@code null}, cannot be encoded, is shorter than {@value #MIN_KEY_LENGTH} bytes, or is not intended for this generator's HMAC algorithm
      *
      * @see <a href="https://datatracker.ietf.org/doc/html/rfc4226#section-7">HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements</a>
      */
