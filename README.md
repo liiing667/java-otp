@@ -76,6 +76,31 @@ if (totp.validateOneTimePassword(key, now, userSuppliedOneTimePassword)) {
 > [!CAUTION]
 > Please note that `validateOneTimePassword` simply checks equality of one-time passwords; compensating for clock drift,  throttling/rate-limiting password validation attempts, clock resynchronization, and so on are all beyond java-otp's scope and callers must address those concerns on their own. For more information, please see ["TOTP: Time-Based One-Time Password Algorithm (RFC 6238) - Security Considerations"](https://datatracker.ietf.org/doc/html/rfc6238#section-5) (and ["HOTP: An HMAC-Based One-Time Password Algorithm (RFC 4226) - Security Requirements"](https://datatracker.ietf.org/doc/html/rfc4226#section-7) for HOTP).
 
+### Verifying one-time passwords
+
+For callers that need more than a yes/no answer, `OneTimePasswordVerifier` wraps a `TimeBasedOneTimePasswordGenerator` and classifies every attempt, prevents replay of consumed time steps, bounds retries, and emits audit events:
+
+```java
+final OneTimePasswordVerifier verifier = OneTimePasswordVerifier.builder(totp)
+        .validationWindow(1)               // accept passwords one time step before/after the current step
+        .maxAttempts(5)                    // fail closed after 5 failed attempts…
+        .retryWindow(Duration.ofMinutes(5)) // …within a sliding 5-minute window
+        .auditListener(event -> auditLog.record(event))
+        .build();
+
+final VerificationResult result = verifier.verify(key, userSuppliedOneTimePassword);
+
+switch (result.getStatus()) {
+    case SUCCESS:               // password accepted; the time step is now consumed and cannot be replayed
+    case INVALID_CODE:          // wrong or malformed code
+    case INVALID_SECRET:        // the key itself is unusable; do not ask the user to retry
+    case REPLAYED_TIME_STEP:    // valid code, but its time step was already consumed
+    case RETRY_LIMIT_EXCEEDED:  // too many recent failures; even correct codes are rejected for now
+}
+```
+
+Every attempt produces exactly one `VerificationAuditEvent` whose status, timestamp, and time step match the `VerificationResult` returned to the caller; events carry only a SHA-256 fingerprint of the key, never the key or the submitted password. All non-`SUCCESS` statuses are denials—verification always fails closed.
+
 ## Performance and best practices
 
 One-time password generators are thread-safe and reusable. Generally, applications should treat one-time password generator instances as long-lived resources (as opposed to creating new generators for each password-generation call).
